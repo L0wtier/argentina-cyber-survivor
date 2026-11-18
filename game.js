@@ -28,11 +28,18 @@ let bulletsGroup;
 let lastFired = 0;
 let scoreText;
 let levelText;
+let healthBarBg;
+let healthBarFill;
 let xp = 0;
 let level = 1;
 let maxXp = 100;
+let hp = 100;
+let maxHp = 100;
+let isInvulnerable = false;
 let isPaused = false;
+let isGameOver = false;
 let levelUpPanel;
+let gameOverPanel;
 
 function preload() {
     this.load.image('player', 'https://labs.phaser.io/assets/sprites/phaser-dude.png');
@@ -42,6 +49,16 @@ function preload() {
 }
 
 function create() {
+    xp = 0;
+    level = 1;
+    maxXp = 100;
+    hp = 100;
+    maxHp = 100;
+    isInvulnerable = false;
+    isPaused = false;
+    isGameOver = false;
+    lastFired = 0;
+
     this.add.grid(400, 300, 2400, 1800, 64, 64, 0x1a1a1a, 1, 0x333333, 1);
     this.physics.world.setBounds(0, 0, 2400, 1800);
 
@@ -64,11 +81,18 @@ function create() {
     gemsGroup = this.physics.add.group();
     bulletsGroup = this.physics.add.group();
 
-    scoreText = this.add.text(16, 16, 'XP: 0', { fontSize: '20px', fill: '#00ffcc' }).setScrollFactor(0);
-    levelText = this.add.text(16, 46, 'Nivel: 1', { fontSize: '20px', fill: '#ffff00' }).setScrollFactor(0);
+    // Creación de la barra de vida visual
+    this.add.text(16, 16, 'HP:', { fontSize: '18px', fill: '#ff4d4d' }).setScrollFactor(0);
+    healthBarBg = this.add.rectangle(55, 25, 200, 18, 0x333333).setScrollFactor(0);
+    healthBarBg.setOrigin(0, 0.5);
+    healthBarFill = this.add.rectangle(55, 25, 200, 18, 0xff4d4d).setScrollFactor(0);
+    healthBarFill.setOrigin(0, 0.5);
+
+    scoreText = this.add.text(16, 46, 'XP: 0', { fontSize: '20px', fill: '#00ffcc' }).setScrollFactor(0);
+    levelText = this.add.text(16, 76, 'Nivel: 1', { fontSize: '20px', fill: '#ffff00' }).setScrollFactor(0);
 
     this.time.addEvent({
-        delay: 1500,
+        delay: 1200,
         callback: spawnDrone,
         callbackScope: this,
         loop: true
@@ -79,10 +103,11 @@ function create() {
     this.physics.add.overlap(player, gemsGroup, collectGem, null, this);
 
     createLevelUpUI.call(this);
+    createGameOverUI.call(this);
 }
 
 function update(time, delta) {
-    if (isPaused) return;
+    if (isPaused || isGameOver) return;
 
     player.body.setVelocity(0);
 
@@ -101,7 +126,7 @@ function update(time, delta) {
 
     dronesGroup.children.iterate(function (drone) {
         if (drone) {
-            this.physics.moveToObject(drone, player, 120);
+            this.physics.moveToObject(drone, player, 100);
         }
     }, this);
 
@@ -111,7 +136,7 @@ function update(time, delta) {
 }
 
 function spawnDrone() {
-    if (isPaused) return;
+    if (isPaused || isGameOver) return;
     let angle = Phaser.Math.FloatBetween(0, Math.PI * 2);
     let distance = Phaser.Math.Between(500, 800);
     let x = player.x + Math.cos(angle) * distance;
@@ -119,6 +144,7 @@ function spawnDrone() {
 
     let drone = dronesGroup.create(x, y, 'drone');
     drone.setScale(0.8);
+    drone.hp = 2; // Cada dron aguanta 2 impactos antes de morir
 }
 
 function fireAutoWeapon(time) {
@@ -128,10 +154,12 @@ function fireAutoWeapon(time) {
         if (bullet) {
             bullet.setActive(true);
             bullet.setVisible(true);
-            this.physics.moveToObject(bullet, closestDrone, 400);
-            lastFired = time + 600;
+            this.physics.moveToObject(bullet, closestDrone, 350);
             
-            this.time.delayedCall(2000, () => {
+            // Cadencia más lenta (dispara cada 1.1 segundos para dejar acercar a los enemigos)
+            lastFired = time + 1100;
+            
+            this.time.delayedCall(2500, () => {
                 if (bullet && bullet.active) bullet.destroy();
             });
         }
@@ -140,12 +168,16 @@ function fireAutoWeapon(time) {
 
 function hitDrone(bullet, drone) {
     bullet.destroy();
-    let droneX = drone.x;
-    let droneY = drone.y;
-    drone.destroy();
+    drone.hp -= 1; // Resta vida al dron
 
-    let gem = gemsGroup.create(droneX, droneY, 'gem');
-    gem.setScale(0.6);
+    if (drone.hp <= 0) {
+        let droneX = drone.x;
+        let droneY = drone.y;
+        drone.destroy();
+
+        let gem = gemsGroup.create(droneX, droneY, 'gem');
+        gem.setScale(0.6);
+    }
 }
 
 function collectGem(player, gem) {
@@ -159,11 +191,36 @@ function collectGem(player, gem) {
 }
 
 function hitPlayer(player, drone) {
+    if (isInvulnerable || isGameOver) return;
+
+    hp -= 20;
+    if (hp < 0) hp = 0;
+    updateHealthBar();
+
+    isInvulnerable = true;
     player.setTint(0xff0000);
-    this.time.delayedCall(200, () => { player.clearTint(); });
+
+    if (hp <= 0) {
+        triggerGameOver.call(this);
+        return;
+    }
+
+    this.time.delayedCall(800, () => {
+        if (player && player.active) {
+            player.clearTint();
+            isInvulnerable = false;
+        }
+    });
+}
+
+function updateHealthBar() {
+    let percentage = hp / maxHp;
+    if (percentage < 0) percentage = 0;
+    healthBarFill.width = 200 * percentage;
 }
 
 function createLevelUpUI() {
+    if (levelUpPanel) levelUpPanel.remove();
     levelUpPanel = document.createElement('div');
     levelUpPanel.style.position = 'absolute';
     levelUpPanel.style.top = '50%';
@@ -205,4 +262,40 @@ function resumeGame() {
     maxXp += 50;
     levelText.setText('Nivel: ' + level);
     scoreText.setText('XP: ' + xp);
+}
+
+function createGameOverUI() {
+    if (gameOverPanel) gameOverPanel.remove();
+    gameOverPanel = document.createElement('div');
+    gameOverPanel.style.position = 'absolute';
+    gameOverPanel.style.top = '50%';
+    gameOverPanel.style.left = '50%';
+    gameOverPanel.style.transform = 'translate(-50%, -50%)';
+    gameOverPanel.style.background = 'rgba(20, 0, 0, 0.95)';
+    gameOverPanel.style.border = '2px solid #ff4d4d';
+    gameOverPanel.style.padding = '30px';
+    gameOverPanel.style.textAlign = 'center';
+    gameOverPanel.style.display = 'none';
+    gameOverPanel.style.zIndex = '1001';
+    gameOverPanel.style.color = '#fff';
+
+    gameOverPanel.innerHTML = `
+        <h2 style="color: #ff4d4d;">SISTEMA DESCONECTADO</h2>
+        <p id="gameover-stats">Nivel alcanzado: 1</p>
+        <button id="btn-restart" style="padding: 12px 24px; margin-top: 10px; background: #ff4d4d; color: #fff; border: none; cursor: pointer; font-weight: bold;">REINICIAR RUN</button>
+    `;
+
+    document.body.appendChild(gameOverPanel);
+
+    document.getElementById('btn-restart').onclick = () => {
+        gameOverPanel.style.display = 'none';
+        this.scene.restart();
+    };
+}
+
+function triggerGameOver() {
+    isGameOver = true;
+    this.physics.pause();
+    document.getElementById('gameover-stats').innerText = 'Nivel alcanzado: ' + level;
+    gameOverPanel.style.display = 'block';
 }
