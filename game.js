@@ -1,8 +1,34 @@
+// Detecta pantallas táctiles (celulares / tablets)
+const isTouchDevice = ('ontouchstart' in window) || navigator.maxTouchPoints > 0 ||
+    (window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
+
+// Calcula un tamaño lógico de juego que se adapte a la forma de la pantalla
+// manteniendo aproximadamente la misma área visible que el 800x600 original.
+const BASE_GAME_AREA = 800 * 600;
+function computeGameSize() {
+    const vw = window.innerWidth || 800;
+    const vh = window.innerHeight || 600;
+    const aspect = Phaser.Math.Clamp(vw / vh, 0.45, 2.3);
+    const width = Math.round(Math.sqrt(BASE_GAME_AREA * aspect));
+    const height = Math.round(width / aspect);
+    return { width, height };
+}
+
+const initialSize = computeGameSize();
+
 const config = {
     type: Phaser.AUTO,
-    width: 800,
-    height: 600,
     parent: 'game-container',
+    backgroundColor: '#111111',
+    scale: {
+        mode: Phaser.Scale.FIT,
+        autoCenter: Phaser.Scale.CENTER_BOTH,
+        width: initialSize.width,
+        height: initialSize.height
+    },
+    input: {
+        activePointers: 3
+    },
     physics: {
         default: 'arcade',
         arcade: {
@@ -68,6 +94,14 @@ let levelUpPanel;
 let pausePanel;
 let gameOverPanel;
 let currentSceneInstance;
+let hpLabel;
+let pauseButton;
+
+// Joystick virtual (táctil / arrastre con el mouse)
+const JOY_RADIUS = 60;
+let joystick = { active: false, pointerId: null, baseX: 0, baseY: 0, dx: 0, dy: 0 };
+let joyBase;
+let joyKnob;
 
 function preload() {
     this.load.image('player', 'https://labs.phaser.io/assets/sprites/phaser-dude.png');
@@ -93,7 +127,7 @@ function create() {
     lastFired = 0;
     lastMelee = 0;
 
-    this.add.grid(400, 300, 2400, 1800, 64, 64, 0x1a1a1a, 1, 0x333333, 1);
+    this.add.grid(1200, 900, 2400, 1800, 64, 64, 0x1a1a1a, 1, 0x333333, 1);
     this.physics.world.setBounds(0, 0, 2400, 1800);
 
     player = this.physics.add.sprite(1200, 900, 'player');
@@ -125,21 +159,28 @@ function create() {
 
     auraGraphics = this.add.graphics();
 
-    xpBarBg = this.add.rectangle(400, 4, 800, 8, 0x222222).setScrollFactor(0);
-    xpBarFill = this.add.rectangle(0, 4, 0, 8, 0x00aaff).setScrollFactor(0);
-    xpBarFill.setOrigin(0, 0.5);
+    const HUD_DEPTH = 500;
+    xpBarBg = this.add.rectangle(0, 0, this.scale.width, 8, 0x222222).setOrigin(0, 0).setScrollFactor(0).setDepth(HUD_DEPTH);
+    xpBarFill = this.add.rectangle(0, 0, 0, 8, 0x00aaff).setOrigin(0, 0).setScrollFactor(0).setDepth(HUD_DEPTH);
 
-    this.add.text(16, 20, 'HP:', { fontSize: '16px', fill: '#ff4d4d', fontStyle: 'bold' }).setScrollFactor(0);
-    healthBarBg = this.add.rectangle(50, 28, 150, 14, 0x333333).setScrollFactor(0);
+    hpLabel = this.add.text(16, 20, 'HP:', { fontSize: '16px', fill: '#ff4d4d', fontStyle: 'bold' }).setScrollFactor(0).setDepth(HUD_DEPTH);
+    healthBarBg = this.add.rectangle(50, 28, 150, 14, 0x333333).setScrollFactor(0).setDepth(HUD_DEPTH);
     healthBarBg.setOrigin(0, 0.5);
-    healthBarFill = this.add.rectangle(50, 28, 150, 14, 0xff4d4d).setScrollFactor(0);
+    healthBarFill = this.add.rectangle(50, 28, 150, 14, 0xff4d4d).setScrollFactor(0).setDepth(HUD_DEPTH);
     healthBarFill.setOrigin(0, 0.5);
 
-    levelText = this.add.text(16, 48, 'Nivel: 1', { fontSize: '18px', fill: '#ffff00', fontStyle: 'bold' }).setScrollFactor(0);
-    goldText = this.add.text(16, 74, 'Oro: ' + gold, { fontSize: '16px', fill: '#ffcc00', fontStyle: 'bold' }).setScrollFactor(0);
-    
-    timerText = this.add.text(400, 25, '00:00', { fontSize: '22px', fill: '#ffffff', fontStyle: 'bold' }).setScrollFactor(0);
+    levelText = this.add.text(16, 48, 'Nivel: 1', { fontSize: '18px', fill: '#ffff00', fontStyle: 'bold' }).setScrollFactor(0).setDepth(HUD_DEPTH);
+    goldText = this.add.text(16, 74, 'Oro: ' + gold, { fontSize: '16px', fill: '#ffcc00', fontStyle: 'bold' }).setScrollFactor(0).setDepth(HUD_DEPTH);
+
+    timerText = this.add.text(this.scale.width / 2, 25, '00:00', { fontSize: '22px', fill: '#ffffff', fontStyle: 'bold' }).setScrollFactor(0).setDepth(HUD_DEPTH);
     timerText.setOrigin(0.5, 0);
+
+    // Reacomoda el HUD cuando cambia el tamaño / orientación de la pantalla
+    this.scale.on('resize', layoutHUD);
+    this.events.once('shutdown', () => this.scale.off('resize', layoutHUD));
+    layoutHUD();
+
+    createJoystick(this);
 
     this.time.addEvent({
         delay: 1000,
@@ -171,6 +212,90 @@ function create() {
     createLevelUpUI();
     createPauseUI();
     createGameOverUI();
+    createPauseButton();
+}
+
+function layoutHUD() {
+    if (!currentSceneInstance || !xpBarBg || !xpBarBg.active) return;
+    const w = currentSceneInstance.scale.width;
+    xpBarBg.setSize(w, 8);
+    updateXpBar();
+    timerText.setPosition(w / 2, 25);
+}
+
+function createJoystick(scene) {
+    joystick = { active: false, pointerId: null, baseX: 0, baseY: 0, dx: 0, dy: 0 };
+
+    joyBase = scene.add.circle(0, 0, JOY_RADIUS, 0xffffff, 0.08)
+        .setStrokeStyle(2, 0x66c0f4, 0.6)
+        .setScrollFactor(0)
+        .setDepth(1000)
+        .setVisible(false);
+    joyKnob = scene.add.circle(0, 0, 24, 0x66c0f4, 0.5)
+        .setScrollFactor(0)
+        .setDepth(1001)
+        .setVisible(false);
+
+    scene.input.on('pointerdown', (pointer) => {
+        if (isPaused || isGameOver || joystick.active) return;
+        joystick.active = true;
+        joystick.pointerId = pointer.id;
+        joystick.baseX = pointer.x;
+        joystick.baseY = pointer.y;
+        joystick.dx = 0;
+        joystick.dy = 0;
+        joyBase.setPosition(pointer.x, pointer.y).setVisible(true);
+        joyKnob.setPosition(pointer.x, pointer.y).setVisible(true);
+    });
+
+    scene.input.on('pointermove', (pointer) => {
+        if (!joystick.active || pointer.id !== joystick.pointerId) return;
+        let dx = pointer.x - joystick.baseX;
+        let dy = pointer.y - joystick.baseY;
+        const len = Math.hypot(dx, dy);
+        if (len > JOY_RADIUS) {
+            dx = dx / len * JOY_RADIUS;
+            dy = dy / len * JOY_RADIUS;
+        }
+        joystick.dx = dx;
+        joystick.dy = dy;
+        joyKnob.setPosition(joystick.baseX + dx, joystick.baseY + dy);
+    });
+
+    const release = (pointer) => {
+        if (!joystick.active || pointer.id !== joystick.pointerId) return;
+        resetJoystick();
+    };
+    scene.input.on('pointerup', release);
+    scene.input.on('pointerupoutside', release);
+}
+
+function resetJoystick() {
+    joystick.active = false;
+    joystick.pointerId = null;
+    joystick.dx = 0;
+    joystick.dy = 0;
+    if (joyBase && joyBase.active) joyBase.setVisible(false);
+    if (joyKnob && joyKnob.active) joyKnob.setVisible(false);
+}
+
+function createPauseButton() {
+    if (!pauseButton) {
+        pauseButton = document.createElement('button');
+        pauseButton.id = 'btn-pause';
+        pauseButton.setAttribute('aria-label', 'Pausa');
+        pauseButton.innerText = 'II';
+        pauseButton.onclick = () => togglePause();
+        document.body.appendChild(pauseButton);
+    }
+    updatePauseButton();
+}
+
+function updatePauseButton() {
+    if (!pauseButton) return;
+    const menuOpen = (mainMenuUI && mainMenuUI.style.display !== 'none') ||
+        (upgradesUI && upgradesUI.style.display === 'block');
+    pauseButton.style.display = (menuOpen || isGameOver) ? 'none' : 'block';
 }
 
 function applyCharacterVisuals() {
@@ -184,7 +309,10 @@ function update(time, delta) {
         togglePause();
     }
 
-    if (isPaused || isGameOver) return;
+    if (isPaused || isGameOver) {
+        if (joystick.active) resetJoystick();
+        return;
+    }
 
     // Lógica de Aura para P3
     auraGraphics.clear();
@@ -220,6 +348,15 @@ function update(time, delta) {
         player.setVelocityY(-speed);
     } else if (wasd.down.isDown || cursors.down.isDown) {
         player.setVelocityY(speed);
+    }
+
+    // Movimiento con joystick táctil
+    if (joystick.active) {
+        const len = Math.hypot(joystick.dx, joystick.dy);
+        if (len > 8) {
+            const force = Math.min(1, len / JOY_RADIUS);
+            player.setVelocity(joystick.dx / len * speed * force, joystick.dy / len * speed * force);
+        }
     }
 
     dronesGroup.children.iterate(function (drone) {
@@ -262,7 +399,9 @@ function updateGameTime() {
 function spawnDrone() {
     if (isPaused || isGameOver) return;
     let angle = Phaser.Math.FloatBetween(0, Math.PI * 2);
-    let distance = Phaser.Math.Between(500, 800);
+    // Aparecen fuera de la pantalla, sin importar la orientación
+    let minDistance = Math.max(500, Math.hypot(currentSceneInstance.scale.width, currentSceneInstance.scale.height) / 2 + 40);
+    let distance = Phaser.Math.Between(minDistance, minDistance + 300);
     let x = player.x + Math.cos(angle) * distance;
     let y = player.y + Math.sin(angle) * distance;
 
@@ -392,7 +531,7 @@ function collectGold(player, coin) {
 function updateXpBar() {
     let percentage = xp / maxXp;
     if (percentage > 1) percentage = 1;
-    xpBarFill.width = 800 * percentage;
+    xpBarFill.setSize(currentSceneInstance.scale.width * percentage, 8);
 }
 
 function hitPlayer(player, source) {
@@ -432,6 +571,7 @@ function updateHealthBar() {
 function createMainMenuUI() {
     if (mainMenuUI) mainMenuUI.remove();
     mainMenuUI = document.createElement('div');
+    mainMenuUI.className = 'ui-panel';
     mainMenuUI.style.position = 'absolute';
     mainMenuUI.style.top = '50%';
     mainMenuUI.style.left = '50%';
@@ -448,7 +588,7 @@ function createMainMenuUI() {
 
     mainMenuUI.innerHTML = `
         <h1 style="color: #66c0f4; margin-top: 0; font-family: sans-serif; letter-spacing: 2px; font-size: 22px;">ARGENTINA CYBER SURVIVOR</h1>
-        <div style="display: flex; justify-content: space-around; margin: 20px 0;">
+        <div class="char-select">
             <button id="char-p1" style="padding: 10px; background: #1b2838; border: 2px solid #00ffff; color: #fff; border-radius: 8px; cursor: pointer; font-weight: bold;">P1: Distancia</button>
             <button id="char-p2" style="padding: 10px; background: #1b2838; border: 2px solid #2a475e; color: #fff; border-radius: 8px; cursor: pointer; font-weight: bold;">P2: Melee</button>
             <button id="char-p3" style="padding: 10px; background: #1b2838; border: 2px solid #2a475e; color: #fff; border-radius: 8px; cursor: pointer; font-weight: bold;">P3: Aura</button>
@@ -474,6 +614,7 @@ function createMainMenuUI() {
     document.getElementById('btn-start-run').onclick = () => {
         mainMenuUI.style.display = 'none';
         isPaused = false;
+        updatePauseButton();
         currentSceneInstance.physics.resume();
     };
 }
@@ -481,6 +622,7 @@ function createMainMenuUI() {
 function createUpgradesUI() {
     if (upgradesUI) upgradesUI.remove();
     upgradesUI = document.createElement('div');
+    upgradesUI.className = 'ui-panel';
     upgradesUI.style.position = 'absolute';
     upgradesUI.style.top = '50%';
     upgradesUI.style.left = '50%';
@@ -500,23 +642,23 @@ function createUpgradesUI() {
         <h2 style="color: #66c0f4; margin-top: 0;">Mejoras</h2>
         <p id="upgrades-gold" style="color: #ffcc00; font-weight: bold;">Oro disponible: ${gold}</p>
         <div style="background: #17212b; padding: 15px; border-radius: 8px; margin-bottom: 20px; text-align: left; border: 1px solid #2a475e;">
-            <div style="font-size: 13px; color: #8f98a0; display: flex; justify-content: space-between; align-items:center; margin-bottom: 8px;">
+            <div class="upgrade-row" style="font-size: 13px; color: #8f98a0; display: flex; justify-content: space-between; align-items:center; margin-bottom: 8px;">
                 <span>❤️ Vida Máxima (Nivel <span id="lvl-hp">0</span>)</span> 
                 <button id="buy-hp" style="background: #2a475e; color:#fff; border:none; padding:4px 10px; border-radius:4px; cursor:pointer;">Comprar (<span id="cost-hp">50</span>g)</button>
             </div>
-            <div style="font-size: 13px; color: #8f98a0; display: flex; justify-content: space-between; align-items:center; margin-bottom: 8px;">
+            <div class="upgrade-row" style="font-size: 13px; color: #8f98a0; display: flex; justify-content: space-between; align-items:center; margin-bottom: 8px;">
                 <span>⚡ Daño de Ataque (Nivel <span id="lvl-damage">0</span>)</span> 
                 <button id="buy-damage" style="background: #2a475e; color:#fff; border:none; padding:4px 10px; border-radius:4px; cursor:pointer;">Comprar (<span id="cost-damage">60</span>g)</button>
             </div>
-            <div style="font-size: 13px; color: #8f98a0; display: flex; justify-content: space-between; align-items:center; margin-bottom: 8px;">
+            <div class="upgrade-row" style="font-size: 13px; color: #8f98a0; display: flex; justify-content: space-between; align-items:center; margin-bottom: 8px;">
                 <span>👟 Velocidad (Nivel <span id="lvl-speed">0</span>)</span> 
                 <button id="buy-speed" style="background: #2a475e; color:#fff; border:none; padding:4px 10px; border-radius:4px; cursor:pointer;">Comprar (<span id="cost-speed">50</span>g)</button>
             </div>
-            <div style="font-size: 13px; color: #8f98a0; display: flex; justify-content: space-between; align-items:center; margin-bottom: 8px;">
+            <div class="upgrade-row" style="font-size: 13px; color: #8f98a0; display: flex; justify-content: space-between; align-items:center; margin-bottom: 8px;">
                 <span>🍀 Suerte / Drop Oro (Nivel <span id="lvl-luck">0</span>)</span> 
                 <button id="buy-luck" style="background: #2a475e; color:#fff; border:none; padding:4px 10px; border-radius:4px; cursor:pointer;">Comprar (<span id="cost-luck">70</span>g)</button>
             </div>
-            <div style="font-size: 13px; color: #8f98a0; display: flex; justify-content: space-between; align-items:center;">
+            <div class="upgrade-row" style="font-size: 13px; color: #8f98a0; display: flex; justify-content: space-between; align-items:center;">
                 <span>💥 Crítico (Nivel <span id="lvl-crit">0</span>)</span> 
                 <button id="buy-crit" style="background: #2a475e; color:#fff; border:none; padding:4px 10px; border-radius:4px; cursor:pointer;">Comprar (<span id="cost-crit">80</span>g)</button>
             </div>
@@ -598,6 +740,7 @@ function createSidePanelUI() {
 function createLevelUpUI() {
     if (levelUpPanel) levelUpPanel.remove();
     levelUpPanel = document.createElement('div');
+    levelUpPanel.className = 'ui-panel';
     levelUpPanel.style.position = 'absolute';
     levelUpPanel.style.top = '50%';
     levelUpPanel.style.left = '50%';
@@ -615,14 +758,14 @@ function createLevelUpUI() {
 
     levelUpPanel.innerHTML = `
         <h2 id="levelup-title" style="color: #66c0f4; margin-top: 0; font-family: sans-serif;">¡Nivel 2!</h2>
-        <p style="color: #8f98a0; font-size: 14px;">Elige una recompensa (Presiona 1 o 2)</p>
+        <p style="color: #8f98a0; font-size: 14px;">${isTouchDevice ? 'Elige una recompensa (toca una opción)' : 'Elige una recompensa (Presiona 1 o 2)'}</p>
         <div id="card-1" style="background: #25384d; border: 1px solid #41739c; padding: 12px; margin: 10px 0; border-radius: 8px; cursor: pointer; text-align: left; position: relative;">
-            <span style="position: absolute; right: 10px; top: 10px; background: #171a21; padding: 2px 8px; border-radius: 4px; font-size: 12px; color: #66c0f4;">1</span>
+            <span style="position: absolute; right: 10px; top: 10px; display: ${isTouchDevice ? 'none' : 'inline'}; background: #171a21; padding: 2px 8px; border-radius: 4px; font-size: 12px; color: #66c0f4;">1</span>
             <strong style="color: #fff; display: block;">Sobrecarga de Poder</strong>
             <span style="color: #8f98a0; font-size: 12px;">Aumenta atributos de combate</span>
         </div>
         <div id="card-2" style="background: #25384d; border: 1px solid #41739c; padding: 12px; margin: 10px 0; border-radius: 8px; cursor: pointer; text-align: left; position: relative;">
-            <span style="position: absolute; right: 10px; top: 10px; background: #171a21; padding: 2px 8px; border-radius: 4px; font-size: 12px; color: #66c0f4;">2</span>
+            <span style="position: absolute; right: 10px; top: 10px; display: ${isTouchDevice ? 'none' : 'inline'}; background: #171a21; padding: 2px 8px; border-radius: 4px; font-size: 12px; color: #66c0f4;">2</span>
             <strong style="color: #fff; display: block;">Propulsores Ágiles</strong>
             <span style="color: #8f98a0; font-size: 12px;">Aumenta la salud máxima y cura</span>
         </div>
@@ -661,7 +804,7 @@ function applyBuff(option) {
     isPaused = false;
     currentSceneInstance.physics.resume();
     xp = 0;
-    xpBarFill.width = 0;
+    updateXpBar();
     maxXp += 60;
     level++;
     levelText.setText('Nivel: ' + level);
@@ -676,6 +819,7 @@ function applyBuff(option) {
 function createPauseUI() {
     if (pausePanel) pausePanel.remove();
     pausePanel = document.createElement('div');
+    pausePanel.className = 'ui-panel';
     pausePanel.style.position = 'absolute';
     pausePanel.style.top = '50%';
     pausePanel.style.left = '50%';
@@ -722,6 +866,7 @@ function togglePause() {
 function createGameOverUI() {
     if (gameOverPanel) gameOverPanel.remove();
     gameOverPanel = document.createElement('div');
+    gameOverPanel.className = 'ui-panel';
     gameOverPanel.style.position = 'absolute';
     gameOverPanel.style.top = '50%';
     gameOverPanel.style.left = '50%';
@@ -755,4 +900,20 @@ function triggerGameOver() {
     currentSceneInstance.physics.pause();
     document.getElementById('gameover-stats').innerText = 'Nivel alcanzado: ' + level + ' | Tiempo: ' + timerText.text;
     gameOverPanel.style.display = 'block';
+    resetJoystick();
+    updatePauseButton();
 }
+// Ajusta el tamaño del juego cuando se rota el celular o se cambia el tamaño de la ventana
+let resizeTimeout;
+function handleViewportResize() {
+    clearTimeout(resizeTimeout);
+    resizeTimeout = setTimeout(() => {
+        if (!gameInstance || !gameInstance.scale) return;
+        const size = computeGameSize();
+        if (size.width !== gameInstance.scale.width || size.height !== gameInstance.scale.height) {
+            gameInstance.scale.setGameSize(size.width, size.height);
+        }
+    }, 150);
+}
+window.addEventListener('resize', handleViewportResize);
+window.addEventListener('orientationchange', handleViewportResize);
