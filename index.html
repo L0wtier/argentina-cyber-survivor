@@ -2,22 +2,116 @@
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="theme-color" content="#111111">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
     <title>Argentina Cyber Survivor - Prototipo</title>
     <style>
-        body {
+        html, body {
             margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            overscroll-behavior: none;
+        }
+        body {
+            position: fixed;
+            inset: 0;
             background-color: #111;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
             color: #fff;
             font-family: sans-serif;
+            touch-action: none;
+            -webkit-user-select: none;
+            user-select: none;
+            -webkit-touch-callout: none;
+            -webkit-tap-highlight-color: transparent;
         }
         #game-container {
-            border: 2px solid #333;
+            position: fixed;
+            inset: 0;
+            overflow: hidden;
+        }
+        #game-container canvas {
             box-shadow: 0 0 20px rgba(0, 255, 204, 0.2);
+            touch-action: none;
+        }
+        button {
+            touch-action: manipulation;
+            font-family: sans-serif;
+        }
+
+        /* Paneles (menú, tienda, nivel, pausa, game over) */
+        .ui-panel {
+            box-sizing: border-box;
+            max-width: calc(100vw - 24px);
+            max-height: calc(100vh - 24px);
+            max-height: calc(100dvh - 24px);
+            overflow-y: auto;
+            -webkit-overflow-scrolling: touch;
+            touch-action: pan-y;
+            font-family: sans-serif;
+        }
+        .char-select {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: space-around;
+            gap: 8px;
+            margin: 20px 0;
+        }
+        .char-select button {
+            flex: 1 1 0;
+            min-width: 90px;
+        }
+        .upgrade-row {
+            gap: 8px;
+        }
+        .upgrade-row button {
+            flex-shrink: 0;
+            white-space: nowrap;
+        }
+
+        /* Botón de pausa (útil sobre todo en pantallas táctiles) */
+        #btn-pause {
+            position: fixed;
+            top: 14px;
+            right: 12px;
+            width: 44px;
+            height: 44px;
+            border-radius: 10px;
+            border: 1px solid #2a475e;
+            background: rgba(15, 22, 36, 0.85);
+            color: #66c0f4;
+            font-size: 18px;
+            font-weight: bold;
+            cursor: pointer;
+            z-index: 950;
+            display: none;
+            padding: 0;
+        }
+
+        @media (max-width: 600px), (max-height: 500px) {
+            .ui-panel {
+                padding: 18px !important;
+            }
+            .ui-panel h1 {
+                font-size: 18px !important;
+            }
+            .ui-panel h2 {
+                font-size: 20px;
+                margin-bottom: 10px !important;
+            }
+            .upgrade-row {
+                font-size: 12px !important;
+            }
+        }
+
+        /* El panel de controles de teclado no sirve en celular y tapa el juego */
+        @media (max-width: 900px), (hover: none) and (pointer: coarse) {
+            #side-instructions {
+                display: none !important;
+            }
         }
     </style>
     <script src="https://cdn.jsdelivr.net/npm/phaser@3.60.0/dist/phaser.min.js"></script>
